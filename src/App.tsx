@@ -34,6 +34,7 @@ export default function GameRunner() {
   const [activeSceneId, setActiveSceneId] = useState(gameData.activeSceneId || 'scene_1');
   const [stageElements, setStageElements] = useState([]);
   const [windowSize, setWindowSize] = useState({ width: typeof window !== 'undefined' ? window.innerWidth : 640, height: typeof window !== 'undefined' ? window.innerHeight : 360 });
+  const [showRotationPrompt, setShowRotationPrompt] = useState(false);
 
   const aspectRatio = gameData.aspectRatio || 'landscape';
   const VIRTUAL_WIDTH = aspectRatio === 'landscape' ? 640 : 360;
@@ -41,11 +42,21 @@ export default function GameRunner() {
 
   useEffect(() => {
     const handleResize = () => {
-      setWindowSize({ width: window.innerWidth, height: window.innerHeight });
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      setWindowSize({ width: w, height: h });
+      if (aspectRatio === 'landscape' && w < h) {
+        setShowRotationPrompt(true);
+      } else if (aspectRatio === 'portrait' && w > h) {
+        setShowRotationPrompt(true);
+      } else {
+        setShowRotationPrompt(false);
+      }
     };
+    handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, []);
+  }, [aspectRatio]);
 
   const scale = (() => {
     const maxW = windowSize.width;
@@ -196,6 +207,7 @@ export default function GameRunner() {
         break;
 
       case 'js':
+        console.log('Executing custom JS action:', act.code);
         if (act.code) {
           try {
             const runUserCode = new Function(
@@ -207,15 +219,22 @@ export default function GameRunner() {
               'activeLayerId', 'setActiveLayerId',
               act.code
             );
+            const customSetStageElements = (newVal) => {
+              if (typeof newVal === 'function') {
+                setStageElements(prev => {
+                  const updated = newVal(prev);
+                  return Array.isArray(updated) ? [...updated] : updated;
+                });
+              } else {
+                setStageElements(Array.isArray(newVal) ? [...newVal] : newVal);
+              }
+            };
             runUserCode(
-              stageElements, (val) => {
-                if (typeof val === 'function') setStageElements(val);
-                else setStageElements(val);
-              },
+              stageElementsRef.current, customSetStageElements,
               activeSceneId, (sceneId) => {
                 setActiveSceneId(sceneId);
               },
-              [], () => {},
+              gameData.sceneEvents[activeSceneId] || [], () => {},
               gameData.gameObjects || [], () => {},
               gameData.layers || [], () => {},
               '', () => {}
@@ -247,12 +266,12 @@ export default function GameRunner() {
 
   const handleButtonClick = (buttonId) => {
     if (!buttonId) return;
-    const btnEl = stageElements.find(e => e.id === buttonId);
+    const btnEl = stageElementsRef.current.find(e => e.id === buttonId);
     const sceneEvents = gameData.sceneEvents[activeSceneId] || [];
     sceneEvents.forEach(ev => {
       const isPressed = ev.conditions?.some(cond => 
         (cond.type === 'pressed' || cond.type === 'pressed_time' || cond.type === 'double_tap' || cond.type === 'click') && 
-        (cond.target === buttonId || (btnEl?.buttonId && cond.target === btnEl.buttonId))
+        (cond.target === buttonId || (btnEl?.buttonId && cond.target === btnEl.buttonId) || (btnEl?.data && cond.target === btnEl.data))
       );
       if (isPressed) {
         ev.actions?.forEach(act => executeAction(act));
@@ -333,15 +352,15 @@ export default function GameRunner() {
       <div 
         style={{ 
           position: 'relative', 
-          width: `${VIRTUAL_WIDTH}px`,
-          height: `${VIRTUAL_HEIGHT}px`,
-          transform: `scale(${scale})`,
-          transformOrigin: 'center',
+          width: `${VIRTUAL_WIDTH}px`, 
+          height: `${VIRTUAL_HEIGHT}px`, 
+          transform: `scale(${scale})`, 
+          transformOrigin: 'center', 
           backgroundColor: gameData.stageBgColor || '#000', 
-          overflow: 'hidden',
-          boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
-          borderRadius: aspectRatio === 'portrait' ? '32px' : '12px',
-          border: aspectRatio === 'portrait' ? '12px solid #27272a' : '2px solid rgba(255,255,255,0.05)',
+          overflow: 'hidden', 
+          boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)', 
+          borderRadius: aspectRatio === 'portrait' ? '32px' : '12px', 
+          border: aspectRatio === 'portrait' ? '12px solid #27272a' : '2px solid rgba(255,255,255,0.05)', 
         }}
       >
         {stageElements.map((el, i) => {
@@ -351,17 +370,16 @@ export default function GameRunner() {
            const isText = gameObject?.type === 'text';
            const bgUrl = el.url || (isObj ? (gameObject?.url || gameObject?.animations?.[0]) : el.data);
            const firstAnim = gameObject?.animations?.[0];
-
            const layers = gameData.layers || [];
            const layerIdx = layers.findIndex(l => l.id === el.layerId);
            const layerZ = layerIdx === -1 ? 10 : (layers.length - layerIdx) * 10;
            const finalZ = isText ? layerZ + 2000 : layerZ;
-
+           const isInteractive = isButton || el.type === 'obj' || el.type === 'enemy';
            return (
              <div 
                key={el.id || i} 
                onClick={(e) => {
-                 if (isButton) {
+                 if (isInteractive) {
                    e.stopPropagation();
                    handleButtonClick(el.id);
                  }
@@ -373,35 +391,35 @@ export default function GameRunner() {
                  width: el.type === 'bg' ? '100%' : el.width, 
                  height: el.type === 'bg' ? '100%' : el.height, 
                  backgroundImage: (!isText && bgUrl) ? `url(${bgUrl})` : undefined, 
-                 backgroundSize: '100% 100%',
-                 backgroundRepeat: 'no-repeat',
-                 backgroundColor: (!bgUrl && el.type === 'btn') ? 'rgba(236,72,153,0.2)' : undefined,
-                 opacity: el.opacity !== undefined ? el.opacity : 1,
-                 transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
-                 cursor: isButton ? 'pointer' : 'default',
-                 pointerEvents: isButton ? 'auto' : 'none',
-                 zIndex: el.type === 'bg' ? 0 : finalZ
+                 backgroundSize: '100% 100%', 
+                 backgroundRepeat: 'no-repeat', 
+                 backgroundColor: (!bgUrl && el.type === 'btn') ? 'rgba(236,72,153,0.2)' : undefined, 
+                 opacity: el.opacity !== undefined ? el.opacity : 1, 
+                 transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined, 
+                 cursor: isInteractive ? 'pointer' : 'default', 
+                 pointerEvents: isInteractive ? 'auto' : 'none', 
+                 zIndex: el.type === 'bg' ? 0 : finalZ 
                }}
              >
                {el.type === 'btn' && <button style={{width:'100%',height:'100%',background:'transparent',border:'none', cursor: 'pointer', color: 'white', fontWeight: 'bold'}}>{el.text}</button>}
                {el.type === 'obj' && gameObject?.type === 'text' ? (
                  <div 
                    style={{
-                     width: '100%',
-                     height: '100%',
-                     display: 'flex',
-                     alignItems: 'center',
-                     justifyContent: gameObject.align === 'left' ? 'flex-start' : gameObject.align === 'right' ? 'flex-end' : 'center',
-                     textAlign: gameObject.align ?? 'center',
-                     fontSize: `${gameObject.fontSize ?? 24}px`,
-                     color: gameObject.color ?? '#ffffff',
-                     fontFamily: gameObject.fontFamily ?? 'Inter, sans-serif',
-                     fontWeight: gameObject.bold !== false ? 'bold' : 'normal',
-                     fontStyle: gameObject.italic ? 'italic' : 'normal',
-                     lineHeight: 1.2,
-                     wordBreak: 'break-word',
-                     overflow: 'visible',
-                     padding: '4px'
+                     width: '100%', 
+                     height: '100%', 
+                     display: 'flex', 
+                     alignItems: 'center', 
+                     justifyContent: gameObject.align === 'left' ? 'flex-start' : gameObject.align === 'right' ? 'flex-end' : 'center', 
+                     textAlign: gameObject.align ?? 'center', 
+                     fontSize: `${gameObject.fontSize ?? 24}px`, 
+                     color: gameObject.color ?? '#ffffff', 
+                     fontFamily: gameObject.fontFamily ?? 'Inter, sans-serif', 
+                     fontWeight: gameObject.bold !== false ? 'bold' : 'normal', 
+                     fontStyle: gameObject.italic ? 'italic' : 'normal', 
+                     lineHeight: 1.2, 
+                     wordBreak: 'break-word', 
+                     overflow: 'visible', 
+                     padding: '4px' 
                    }}
                  >
                    {gameObject.textContent ?? gameObject.name ?? 'Text'}
@@ -409,12 +427,12 @@ export default function GameRunner() {
                ) : el.type === 'obj' && firstAnim && firstAnim.frames && firstAnim.frames.length > 0 ? (
                  <AnimatedSprite frames={firstAnim.frames} fps={firstAnim.fps || 24} speed={firstAnim.speed || 1} width={el.width} height={el.height} />
                ) : el.type === 'obj' && (!firstAnim || !firstAnim.frames || firstAnim.frames.length === 0) ? (
-                 <div style={{ width: '100%', height: '100%', backgroundColor: 'rgba(6,182,212,0.2)', border: '1px solid rgba(6,182,212,0.5)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyRules: 'center', fontSize: '10px', color: '#22d3ee', fontWeight: 'bold', padding: '4px', textAlign: 'center' }}>
+                 <div style={{ width: '100%', height: '100%', backgroundColor: 'rgba(6,182,212,0.2)', border: '1px solid rgba(6,182,212,0.5)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontSize: '10px', color: '#22d3ee', fontWeight: 'bold', padding: '4px', textAlign: 'center' }}>
                    {gameObject?.name || 'Object'}
                  </div>
                ) : null}
                {el.isToast && (
-                 <div style={{ width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.95)', color: '#facc15', border: '1px solid rgba(234,179,8,0.8)', borderRadius: '4px', padding: '4px 12px', fontSize: '12px', fontFamily: 'monospace', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyRules: 'center', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.3)', textAlign: 'center' }}>
+                 <div style={{ width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.95)', color: '#facc15', border: '1px solid rgba(234,179,8,0.8)', borderRadius: '4px', padding: '4px 12px', fontSize: '12px', fontFamily: 'monospace', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.3)', textAlign: 'center' }}>
                    {el.text}
                  </div>
                )}
@@ -422,6 +440,14 @@ export default function GameRunner() {
            );
         })}
       </div>
+      {showRotationPrompt && (
+        <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(10,10,12,0.95)', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#fff', fontFamily: 'Inter, sans-serif', padding: '24px', textAlign: 'center' }}>
+          <div style={{ fontSize: '48px', marginBottom: '16px' }}>🔄</div>
+          <h2 style={{ fontSize: '20px', fontWeight: 'bold', marginBottom: '8px' }}>Please Rotate Your Device</h2>
+          <p style={{ color: '#a1a1aa', fontSize: '14px', maxWidth: '300px', marginBottom: '24px' }}>This game is designed for {aspectRatio} screen layout. Please rotate your screen for the best experience.</p>
+          <button onClick={() => setShowRotationPrompt(false)} style={{ backgroundColor: '#fff', color: '#000', border: 'none', padding: '10px 20px', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' }}>Play Anyway</button>
+        </div>
+      )}
     </div>
   );
 }
